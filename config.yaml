@@ -64,6 +64,9 @@ model:
   type: "decision_tree"                             # dummy | logistic_regression | decision_tree | random_forest
   params:
     random_state: 42
+    max_depth: 12
+    min_samples_leaf: 93
+    criterion: gini
 
 tuning:
   enabled: true
