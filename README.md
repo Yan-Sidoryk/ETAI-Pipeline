@@ -1,5 +1,17 @@
 # Baseline Predictive Pipeline -- ETAI -- 20222004
 
+## Im gona be putting the change notes here from now on
+
+- added oblique random forest + adaboost and a corrected paired t-test to compare models
+- added more engineered features in `add_engineered_features` (log priors, juv total, has priors, young with priors, felony x priors, ...)
+- uncommented the ensemble search spaces and tuned all 3 (with the new features), nested CV:
+  - random forest - 0.674 (depth 12, min leaf 149, sqrt)
+  - oblique rf - 0.676 (depth 17, min leaf 116, 7 projections) -- FPR a bit worse (AA 0.30, Cauc 0.17)
+  - adaboost - 0.678 (depth 3 trees, 225 rounds, lr 0.025) -- best of the three, FPR same as the tree (0.28 / 0.15)
+  - Result: none of them is significantly better than the old tree (0.679) or the new-features tree (0.672)
+
+---
+
 This is the **starting point** for your semester project: a small but *complete* predictive pipeline -- every piece a real project needs (entry point, config, data loading, preprocessing, model, evaluation), just kept as simple as possible for now.
 
 The task: predict two-year recidivism using ProPublica's COMPAS

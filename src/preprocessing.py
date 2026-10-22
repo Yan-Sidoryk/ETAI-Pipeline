@@ -87,6 +87,46 @@ def add_missingness_indicators(df: pd.DataFrame, mnar_indicator_sources: list) -
             out[f"{col}_was_missing"] = out[col].isna().astype(int)
     return out
 
+def _flag(condition: pd.Series, *sources: pd.Series) -> pd.Series:
+    """0/1 flag that stays NaN where any source is missing, so the imputer handles it."""
+    missing = pd.concat(sources, axis=1).isna().any(axis=1)
+    return condition.astype(float).mask(missing)
+
+
+def add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
+    '''
+    Creates new features from existing ones. Row-wise only (nothing learned from the data),
+    so it is leak-safe and runs unchanged on data to predict. Missing inputs give NaN outputs.
+    '''
+    out = df.copy()
+    age, priors = out["age"], out["priors_count"]
+    juv_cols = [c for c in ["juv_fel_count", "juv_misd_count", "juv_other_count"] if c in out.columns]
+
+    # Criminal-history intensity: how fast offences accumulated over the adult years.
+    out["priors_per_adult_year"] = priors / (age - 17).clip(lower=1)
+    # Skewed count (long right tail): log scale helps linear models, harmless for trees.
+    out["log_priors"] = np.log1p(priors)
+    out["has_priors"] = _flag(priors > 0, priors)
+
+    if juv_cols:
+        # min_count=1: the total is NaN only if every juvenile count is missing.
+        juv_total = out[juv_cols].sum(axis=1, min_count=1)
+        out["juv_total"] = juv_total
+        out["has_juv_record"] = _flag(juv_total > 0, juv_total)
+        # Total known record, adult + juvenile.
+        out["total_offenses"] = priors + juv_total
+
+    # Early onset: a prior record before age 25 is a strong recidivism signal.
+    out["young_with_priors"] = _flag((age < 25) & (priors > 0), age, priors)
+
+    if "c_charge_degree" in out.columns:
+        charge = out["c_charge_degree"]
+        is_felony = _flag(charge == "F", charge)
+        # Current felony on top of a prior record.
+        out["felony_x_priors"] = is_felony * priors
+
+    return out
+
 
 def split_features_target(df: pd.DataFrame, data_config: dict, mnar_indicator_sources: list):
     """
@@ -98,6 +138,7 @@ def split_features_target(df: pd.DataFrame, data_config: dict, mnar_indicator_so
     drop_columns = data_config.get("drop_columns", [])
 
     df = add_missingness_indicators(df, mnar_indicator_sources)
+    df = add_engineered_features(df)
     y = df[target] if target in df.columns else None
 
     extras_cols = [c for c in [sensitive_attr, "score_text"] if c in df.columns]
