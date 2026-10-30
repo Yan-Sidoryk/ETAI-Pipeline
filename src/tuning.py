@@ -10,8 +10,9 @@ import numpy as np
 import optuna
 import pandas as pd
 from sklearn.base import clone
-from sklearn.metrics import get_scorer
 from sklearn.model_selection import cross_val_score
+
+from src.evaluate import get_metric_scorer, metric_scorers
 
 
 def tune_pipeline(pipeline, X, y, cv, scoring: str, search_space: dict, n_trials: int,
@@ -38,7 +39,7 @@ def tune_pipeline(pipeline, X, y, cv, scoring: str, search_space: dict, n_trials
                 raise ValueError(f"Unknown search-space type for {name}: {spec['type']}. "
                                  "Options: int, float, categorical")
         candidate = clone(pipeline).set_params(**params)
-        scores = cross_val_score(candidate, X, y, cv=cv, scoring=scoring, n_jobs=n_jobs)
+        scores = cross_val_score(candidate, X, y, cv=cv, scoring=get_metric_scorer(scoring), n_jobs=n_jobs)
         trial.set_user_attr("std", float(scores.std(ddof=1)))
         return scores.mean()
 
@@ -49,18 +50,18 @@ def tune_pipeline(pipeline, X, y, cv, scoring: str, search_space: dict, n_trials
 
 
 def nested_cross_validate(pipeline, X, y, outer_cv, inner_cv, scoring: str, search_space: dict,
-                          n_trials: int, random_state: int, n_jobs: int = 1):
+                          n_trials: int, random_state: int, metrics=None, n_jobs: int = 1):
     """
     Honest estimate of the tuning procedure. For every outer fold: tune on the outer-training
     rows (`tune_pipeline` with `inner_cv`), refit the best pipeline on them, and score it on
     the outer-validation rows, which took no part in the tuning.
 
-    Returns (fold_scores, y_oof), as `cross_validate_pipeline` does, with two extra kinds of
+    Returns (fold_scores, oof_proba), as `cross_validate_pipeline` does, with two extra kinds of
     columns: `inner_best` (the tuning score inside that fold) and the hyperparameters chosen.
     """
-    scorer = get_scorer(scoring)
+    scorers = metric_scorers(scoring, metrics)
     rows = []
-    y_oof = np.empty(len(X), dtype=np.asarray(y).dtype)
+    oof_proba = np.empty(len(X))
     for fold, (train_idx, val_idx) in enumerate(outer_cv.split(X, y), start=1):
         X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
         X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
@@ -69,19 +70,22 @@ def nested_cross_validate(pipeline, X, y, outer_cv, inner_cv, scoring: str, sear
                                              search_space, n_trials, random_state, n_jobs)
         best_pipeline.fit(X_train, y_train)
 
-        train_score = scorer(best_pipeline, X_train, y_train)
-        val_score = scorer(best_pipeline, X_val, y_val)
-        y_oof[val_idx] = best_pipeline.predict(X_val)
+        metric_scores = {}
+        for name, scorer in scorers.items():
+            metric_scores[f"train_{name}"] = scorer(best_pipeline, X_train, y_train)
+            metric_scores[f"val_{name}"] = scorer(best_pipeline, X_val, y_val)
+        train_score, val_score = metric_scores[f"train_{scoring}"], metric_scores[f"val_{scoring}"]
+        oof_proba[val_idx] = best_pipeline.predict_proba(X_val)[:, 1]
         rows.append({"fold": fold, "train": train_score, "validation": val_score,
                      "gap": train_score - val_score, "inner_best": study.best_value,
-                     **study.best_params})
-    return pd.DataFrame(rows), y_oof
+                     **study.best_params, **metric_scores})
+    return pd.DataFrame(rows), oof_proba
 
 
 def tuning_report(study, nested_scores: pd.DataFrame, scoring: str = "accuracy", top: int = 5) -> str:
     """
     Best hyperparameters and top trials of the final study, plus the optimism check (mean
-    tuning score vs mean honest score over the outer folds), as text (printed and returned).
+    tuning score vs mean honest score over the outer folds), as text.
     """
     trials = study.trials_dataframe(attrs=("number", "value", "params", "user_attrs"))
     trials = trials.rename(columns=lambda c: c.replace("params_", "").replace("user_attrs_", ""))
@@ -101,6 +105,4 @@ def tuning_report(study, nested_scores: pd.DataFrame, scoring: str = "accuracy",
         f"  honest score on the outer folds (validation)     mean = {outer:.3f}",
         f"  optimism = {inner - outer:+.3f}   -> report the honest one",
     ]
-    text = "\n".join(lines)
-    print(text)
-    return text
+    return "\n".join(lines)

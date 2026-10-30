@@ -2,6 +2,10 @@
 
 ## Im gona be putting the change notes here from now on
 
+- added 8 metrics to every run (accuracy, balanced accuracy, precision, recall, f1, fbeta_2, roc_auc, average_precision) -- tuning now optimises **roc_auc** (`cv.selection_metric`) instead of accuracy
+- reports use out-of-fold probabilities + a confusion matrix, and every run shows the no-model floor (dummy on the same folds)
+- added gradient boosting, hist gradient boosting and naive bayes (+ search spaces)
+---
 - added oblique random forest + adaboost and a corrected paired t-test to compare models
 - added more engineered features in `add_engineered_features` (log priors, juv total, has priors, young with priors, felony x priors, ...)
 - uncommented the ensemble search spaces and tuned all 3 (with the new features), nested CV:
@@ -34,9 +38,9 @@ go on.
 │   ├── data_diagnostics.py   # missingness-mechanism test, domain-rule checks, duplicate check (new week 3)
 │   ├── preprocessing.py      # leak-safe cleaning, deployable preprocessing pipeline, and train/test split (week 3 grew this file's job well beyond just the split -- same file, same name as week 2)
 │   ├── model.py               # model construction
-│   ├── evaluate.py           # accuracy  + fairness check
-│   └── results.py            # saves each run's report to disk
-├── results/                  # created automatically -- one file per run (not tracked in git)
+│   ├── evaluate.py           # cross-validation on several metrics, out-of-fold probabilities, confusion matrix + fairness check, paired test
+│   └── results.py            # saves each run's report to disk, and its scores to the runs table
+├── results/                  # created automatically -- one report per run + runs.csv, the table of all runs (not tracked in git)
 └── data/
     ├── compas_two_year_recidivism.csv
     └── README.md              # problem description + full data dictionary
