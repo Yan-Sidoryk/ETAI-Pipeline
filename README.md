@@ -2,6 +2,10 @@
 
 ## Im gona be putting the change notes here from now on
 
+- added **XGBoost** + its search space - it's now the model `main.py` runs
+- added **feature selection** as a learned pipeline step: new `VoteSelector` in `src/model.py` - a random forest, gradient boosting and an L1 logistic regression each vote for features, and features
+- Result: tuned xgboost (0.729 roc_auc) beats the tuned tree (0.717)
+---
 - added 8 metrics to every run (accuracy, balanced accuracy, precision, recall, f1, fbeta_2, roc_auc, average_precision) -- tuning now optimises **roc_auc** (`cv.selection_metric`) instead of accuracy
 - reports use out-of-fold probabilities + a confusion matrix, and every run shows the no-model floor (dummy on the same folds)
 - added gradient boosting, hist gradient boosting and naive bayes (+ search spaces)
@@ -37,7 +41,7 @@ go on.
 │   ├── data.py               # loading
 │   ├── data_diagnostics.py   # missingness-mechanism test, domain-rule checks, duplicate check (new week 3)
 │   ├── preprocessing.py      # leak-safe cleaning, deployable preprocessing pipeline, and train/test split (week 3 grew this file's job well beyond just the split -- same file, same name as week 2)
-│   ├── model.py               # model construction
+│   ├── model.py               # model construction (incl. XGBoost) + VoteSelector feature selection + build_pipeline(): preprocessing + selection + model
 │   ├── evaluate.py           # cross-validation on several metrics, out-of-fold probabilities, confusion matrix + fairness check, paired test
 │   └── results.py            # saves each run's report to disk, and its scores to the runs table
 ├── results/                  # created automatically -- one report per run + runs.csv, the table of all runs (not tracked in git)
