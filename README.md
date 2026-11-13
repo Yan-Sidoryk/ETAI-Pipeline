@@ -1,82 +1,128 @@
-# Baseline Predictive Pipeline -- ETAI -- 20222004
+# Predictive Pipeline -- ETAI -- 20222004
 
-## Im gona be putting the change notes here from now on
+**Task:** predict whether a person earns more than 50,000 USD a year (`income_over_50k`, 1 = yes, about 24% of people) from 1994 US Census data (UCI *Adult*, subsampled and extended for the course). `data/adult_train.csv` has 6,000 labelled people; `data/adult_new.csv` has 2,000 new people the final model predicts. Column descriptions: `data/README.md`.
 
-- added **XGBoost** + its search space - it's now the model `main.py` runs
-- added **feature selection** as a learned pipeline step: new `VoteSelector` in `src/model.py` - a random forest, gradient boosting and an L1 logistic regression each vote for features, and features
-- Result: tuned xgboost (0.729 roc_auc) beats the tuned tree (0.717)
----
-- added 8 metrics to every run (accuracy, balanced accuracy, precision, recall, f1, fbeta_2, roc_auc, average_precision) -- tuning now optimises **roc_auc** (`cv.selection_metric`) instead of accuracy
-- reports use out-of-fold probabilities + a confusion matrix, and every run shows the no-model floor (dummy on the same folds)
-- added gradient boosting, hist gradient boosting and naive bayes (+ search spaces)
----
-- added oblique random forest + adaboost and a corrected paired t-test to compare models
-- added more engineered features in `add_engineered_features` (log priors, juv total, has priors, young with priors, felony x priors, ...)
-- uncommented the ensemble search spaces and tuned all 3 (with the new features), nested CV:
-  - random forest - 0.674 (depth 12, min leaf 149, sqrt)
-  - oblique rf - 0.676 (depth 17, min leaf 116, 7 projections) -- FPR a bit worse (AA 0.30, Cauc 0.17)
-  - adaboost - 0.678 (depth 3 trees, 225 rounds, lr 0.025) -- best of the three, FPR same as the tree (0.28 / 0.15)
-  - Result: none of them is significantly better than the old tree (0.679) or the new-features tree (0.672)
+The pipeline was built on ProPublica's COMPAS recidivism data (weeks 2-8) and moved to Adult income in week 9; COMPAS has since been removed. Its history is in git (up to the "week 8 submission" commit).
 
----
+## Running the pipeline
 
-This is the **starting point** for your semester project: a small but *complete* predictive pipeline -- every piece a real project needs (entry point, config, data loading, preprocessing, model, evaluation), just kept as simple as possible for now.
+With the environment active (see "Environment setup"), from the project's root folder:
+```bash
+python main.py                 # uses config.yaml
+python main.py other.yaml      # any other config file
+```
 
-The task: predict two-year recidivism using ProPublica's COMPAS
-dataset -- the data behind a real 2016 investigation into a risk-
-assessment algorithm actually used by US courts to help inform bail and sentencing decisions. See `data/README.md` for the full problem description and a complete data dictionary before you start.
+It loads and cleans the data, locks a stratified 20% test set away, cross-validates the whole pipeline (preprocessing -> feature selection -> model) on the development set with 8 metrics and the no-model floor, tunes it with Optuna under nested CV (if `tuning.enabled`), prints a fairness check (false positive rate by `sex`), refits on all development rows and predicts `data/adult_new.csv`.
 
-It has some **deliberately weak spots**. Part of your work this
-semester is finding them and making them better -- see the pipeline progress table below, which tracks what changes and why as the weeks
-go on.
+Outputs:
+- `results/run_<timestamp>.txt` -- full report of each run (per-fold tables, tuning, confusion matrix, fairness, features kept); `results/runs.csv` -- scoreboard of all runs. Not tracked in git.
+- `predictions/adult_new_predictions.csv` -- `id`, probability and 0/1 prediction for all 2,000 new people. Tracked in git.
+
+Tuning with feature selection takes several minutes; set `tuning.enabled: false` in `config.yaml` for quick runs.
 
 ## Project structure
 
 ```
 .
-├── main.py                  # entry point: run the whole pipeline
-├── config.yaml               # all tunable settings live here
+├── main.py                  # entry point: python main.py [config]  (default config.yaml)
+├── config.yaml              # all settings: data, cleaning rules, preprocessing, model, selection, tuning, output
 ├── requirements.txt
 ├── src/
-│   ├── data.py               # loading
-│   ├── data_diagnostics.py   # missingness-mechanism test, domain-rule checks, duplicate check (new week 3)
-│   ├── preprocessing.py      # leak-safe cleaning, deployable preprocessing pipeline, and train/test split (week 3 grew this file's job well beyond just the split -- same file, same name as week 2)
-│   ├── model.py               # model construction (incl. XGBoost) + VoteSelector feature selection + build_pipeline(): preprocessing + selection + model
-│   ├── evaluate.py           # cross-validation on several metrics, out-of-fold probabilities, confusion matrix + fairness check, paired test
-│   └── results.py            # saves each run's report to disk, and its scores to the runs table
-├── results/                  # created automatically -- one report per run + runs.csv, the table of all runs (not tracked in git)
+│   ├── data.py              # loading
+│   ├── preprocessing.py     # rule-based cleaning, feature engineering, feature/target split, leak-safe ColumnTransformer, dev/test split
+│   ├── model.py             # model construction (incl. XGBoost) + VoteSelector feature selection + build_pipeline()
+│   ├── evaluate.py          # cross-validation on several metrics, out-of-fold probabilities, confusion matrix + fairness check, paired test
+│   ├── tuning.py            # Optuna tuning + nested cross-validation
+│   ├── predict.py           # predicts label-free rows (data.predict_path) with the refit pipeline
+│   └── results.py           # saves each run's report, and its scores to the scoreboard
+├── predictions/
+│   └── adult_new_predictions.csv
+├── results/                 # created automatically, not tracked in git
 └── data/
-    ├── compas_two_year_recidivism.csv
-    └── README.md              # problem description + full data dictionary
+    ├── adult_train.csv      # 6,000 labelled rows
+    ├── adult_new.csv        # 2,000 rows to predict
+    └── README.md            # column descriptions
 ```
 
 ## Pipeline progress
 
-This table is updated after each practical class, so you can always see what changed in the pipeline and why -- it's a running log, not a fixed syllabus.
+| Week | Focus | Change |
+|------|-------|--------|
+| 2-8 | COMPAS recidivism | baseline pipeline, EDA-driven cleaning, leak-safe preprocessing, cross-validation on 8 metrics, fairness check, model zoo (trees, ensembles, boosting, XGBoost), Optuna tuning with nested CV, VoteSelector feature selection, scoreboard + corrected paired t-test |
+| 9 | New dataset: Adult income | config chosen on the command line; placeholder cleaning covers every text column; feature engineering chosen in the config; generic fairness report; `src/predict.py` predicts `adult_new.csv`; fixed the target encoder and count-encoded feature names. Then COMPAS removed: Adult is the only task and `config.yaml` the only config. |
 
-| Week | Practical class focus | Added to the pipeline |
-|------|------------------------|------------------------|
-| 2 | Introduction & baseline pipeline | Initial version: project structure, a single naive train/test split (no cross-validation), minimal preprocessing (drop rows with missing values, one-hot encode categoricals), logistic regression baseline, a first (deliberately simple) fairness check comparing our model's and COMPAS's own false-positive rate by race, train-vs-test accuracy reporting (to start spotting overfitting), and each run's full report saved automatically to `results/` |
-| 3 | EDA + preprocessing -- diagnose the data, then fix it | `src/data_diagnostics.py` (missingness-mechanism test via chi-square + Cramér's V, domain-rule invalid-value detection, two-way duplicate check) and `src/preprocessing.py` (leak-safe category cleanup, mechanism-matched imputation with `_was_missing` indicators for MNAR columns, a deployable `ColumnTransformer`, **and** the train/test split itself, all in the one file rather than split across two) replace the old naive `dropna()`/`pd.get_dummies()` preprocessing; encoder/scaler pair (count encoding + robust scaling) chosen by an empirical grid over 15 repeated splits, checked against the runner-up with a paired comparison so the win isn't just noise; three redundant columns (found via correlation + VIF) dropped; `config.yaml` gains `diagnostics` and `preprocessing` sections -- see "Preprocessing decisions" below. |
+## Data decisions
 
-## Preprocessing decisions
+All in `config.yaml`; no column is named in `src/` except in `add_adult_features`.
 
-*(New this week -- written straight from the diagnosis in `Practical/W3/notebooks/01_eda_introduction.ipynb` and the empirical grid in `02_preprocessing.ipynb`. Full walkthrough lives in those two notebooks; this is the summary.)*
+| Column(s) | Issue | What was done |
+|---|---|---|
+| `income_over_50k` | target, 24% positive | stratified folds and test split |
+| `id` | identifier | not a feature; predictions are saved by `id` |
+| `sex` | sensitive attribute | never a feature; audited in the fairness report |
+| `race` | second protected attribute | not a feature either: income can be predicted without it, so the model shouldn't use it |
+| `fnlwgt` | census sampling weight, not a trait of the person | dropped |
+| `education` | one-to-one with `education_num` | dropped, `education_num` keeps the order |
+| `workclass`, `occupation`, `native_country` | `?` placeholder (379 / 381 / 86 rows) | turned into missing in cleaning, then mode-imputed |
+| `workclass` / `occupation` missing | same people, who earn > 50K half as often (12% vs 25%): MNAR | `workclass_was_missing` flag |
+| `native_country` `?`, empty cells in `v01`-`v06` | ~3%, no relation with the target | impute only |
+| `age`, `hours_per_week`, `capital_gain`, `capital_loss` | validity rules: age 17-90 (74 valid 17-year-olds), hours 1-99, gains/losses ≥ 0 | violations -> missing (none in these files) |
+| `capital_gain` | 92% zero, 99999 is the census top code | kept as real values; log and has-gain features added |
+| `v01`-`v25` | undocumented | kept as features, left to feature selection (none survives) |
+| duplicates | none | `drop_duplicate_rows` kept for training data; never applied to the rows to predict |
 
-| Column(s) | Issue found | Mechanism | What was done |
+## Moving from COMPAS to Adult: what broke, why, and the fix
+
+| What broke | Why (the hidden COMPAS assumption) | Fix |
+|---|---|---|
+| no way to run another config | `main.py` always loaded `config.yaml` | `python main.py <config>`, default `config.yaml` |
+| `?` survived as a real category in `workclass`, `occupation`, `native_country` (silent: no error) | placeholders were only cleaned in columns listed in `canonical_categories`, and on COMPAS every column with placeholders happened to be listed | `clean_dataset` turns placeholders into NaN in **every** text column |
+| `KeyError: 'priors_count'` | feature engineering built COMPAS features unconditionally | `add_adult_features`, chosen by `preprocessing.feature_engineering: adult \| none` |
+| `KeyError: 'score_text'` in the fairness report | the fairness report always compared against COMPAS's own score, and said "reoffend" | fairness report uses only the configured sensitive attribute; neutral wording |
+| no way to predict new rows | the pipeline only ever evaluated labelled data | `src/predict.py`: same cleaning (no de-duplication), refit pipeline, `id` + probability + 0/1; checks rows out = rows in |
+| "Features kept: categorical__1, categorical__2, ..." | the imputer handed `CountEncoder` a bare array, so it named columns by position (on COMPAS no categorical was ever kept, so nobody saw it) | imputer outputs pandas, names survive |
+| `encoder: target` crashed | `TargetEncoder(cv=StratifiedKFold(...))` is rejected by current sklearn | `cv=5, shuffle=True, random_state=seed` (still stratified for a binary target) |
+| predictions would not be committed | `results/` is gitignored | predictions go to `predictions/` |
+
+## Results
+
+5-fold stratified CV on the 4,800 development rows; the 1,200-row test set is still locked.
+
+| Run | ROC-AUC | Accuracy | F1 |
 |---|---|---|---|
-| `age` | 2.0% missing | MCAR | median impute, no indicator needed |
-| `juv_fel_count` | 3.0% missing | MCAR | median impute, no indicator needed |
-| `priors_count` | ~7% missing (incl. placeholder tokens) | MNAR -- tied to `age_cat` | median impute + `priors_count_was_missing` flag |
-| `c_charge_degree` | 3.2% missing | MNAR -- tied to `age_cat` | mode impute + `c_charge_degree_was_missing` flag |
-| `race` | ~1% missing (placeholder tokens) | MCAR | mode impute, no indicator (excluded from model features anyway) |
-| `sex` | ~1.5% missing (incl. placeholder tokens) | MCAR | mode impute, no indicator needed |
-| `age`, `decile_score`, `juv_fel_count`, `priors_count` | invalid values (out-of-range or negative) | domain rule | converted to `NaN` before imputation |
-| `sex` / `race` / `c_charge_degree` / `score_text` | inconsistent category spelling (casing, whitespace, abbreviations) | data entry | canonicalized to one spelling per category |
-| whole rows | 72 exact-duplicate rows, all sharing a repeated `id` | data entry | dropped, kept first occurrence |
-| `prior_offenses`, `age_in_months`, `juvenile_total` | redundant with other columns (correlation r=1.00, or -- for `juvenile_total` -- an exact sum caught only by VIF) | multicollinearity | dropped |
+| targets | ≥ 0.90 | ≥ 0.855 | ≥ 0.66 |
+| no model (always "≤ 50K") | 0.50 | 0.76 | 0.00 |
 
-**Encoder/scaler pair:** chosen empirically -- 4 encoders (one-hot, ordinal, count, target) × 4 scalers (none, standard, min-max, robust), scored by mean accuracy across 15 repeated train/test splits with logistic regression. **Target encoding + standard scaling won**, though a paired comparison against the runner-up (same 15 splits, per-split difference) showed the margin was within noise -- see `02_preprocessing.ipynb`'s grid + paired-comparison cells for the full table and the check itself.
+*Comparison runs, untuned, xgboost (`n_estimators 300, learning_rate 0.05, max_depth 4`), selection min_votes 2 unless stated:*
+
+| Run | ROC-AUC | Accuracy | F1 |
+|---|---|---|---|
+| xgboost, count encoder | 0.912 | 0.861 | 0.680 |
+| xgboost, **target encoder** | 0.912 | 0.864 | 0.686 |
+| xgboost, onehot encoder | 0.905 | 0.853 | 0.655 |
+| xgboost, ordinal encoder | 0.908 | 0.855 | 0.659 |
+| xgboost, count encoder + `scale_pos_weight` 3.2 | 0.912 | 0.820 | 0.691 |
+| xgboost, count encoder, no engineered features | 0.913 | 0.862 | 0.680 |
+| xgboost, count encoder, min_votes 1 | 0.912 | 0.862 | 0.679 |
+| xgboost, count encoder, no feature selection | 0.906 | 0.860 | 0.667 |
+| random forest (300 trees, min leaf 5), target encoder | 0.903 | 0.854 | 0.652 |
+| gradient boosting (sklearn defaults), target encoder | 0.911 | 0.862 | 0.676 |
+
+*Final model, the one in `config.yaml`:*
+
+| Run | ROC-AUC | Accuracy | F1 |
+|---|---|---|---|
+| **gradient boosting, target encoder, tuned (30 trials, nested CV, ~4.5 min)** | **0.908 ± 0.014** | **0.856 ± 0.008** | **0.663 ± 0.026** |
+
+Tuned hyperparameters: `n_estimators 131, learning_rate 0.076, max_depth 3, min_samples_leaf 4, subsample 0.90, select__min_votes 1`. xgboost is no longer tuned (too slow); its untuned runs stay above for comparison.
+
+**Features kept by the final model (10 of 41):** age, education_num, capital_gain, capital_loss, hours_per_week, log_capital_gain, capital_net, marital_status, occupation, relationship. **No `v` column** is kept (they only get in with min_votes 1 *and* an untuned model, without improving anything).
+
+**Fairness check** (out-of-fold, development set): false positive rate 0.02 for women vs 0.08 for men. Women are much less often predicted > 50K, which mostly follows the base rate in the 1994 data.
+
+**Predictions** for the 2,000 new people: [`predictions/adult_new_predictions.csv`](predictions/adult_new_predictions.csv) (18.5% predicted > 50K), from the tuned gradient boosting model.
+
+**Reflection.** The hardest assumption to find was the placeholder cleaning. It didn't crash, it just quietly kept `?` as a category, because on COMPAS every column with placeholders happened also to have a spelling map. The same goes for the unreadable feature names: they only showed up once a categorical feature was strong enough to be selected. What reached the targets was mostly good cleaning plus a strong default model. Boosting (xgboost or sklearn's gradient boosting) with feature selection cleared all three targets before any tuning. Tuning didn't add anything here: the honest nested score of the tuned model is slightly below the untuned one, and only just above the accuracy and F1 targets. Class weighting is a clear trade-off: F1 goes up, but accuracy falls below the target.
 
 ## Environment setup
 
@@ -141,41 +187,6 @@ If it still doesn't stick (common on locked-down school/lab machines with a Grou
 **Windows blocks the terminal/Python from reading or writing files in Documents (or Desktop/Pictures).** Shows up as an "Access is denied" error, or a silent failure to create/update a file, only when the project sits inside one of those folders. Two independent settings can cause this -- check both:
 - **Windows Security -> Virus & threat protection -> Manage ransomware protection** -- turn off **Controlled folder access**, or add your terminal/Python/editor to its allowed-apps list.
 - **Settings -> Privacy & security -> File system** -- make sure the terminal/Python has access.
-
-## Running the pipeline
-
-With the environment active (see above), from the project's root
-folder, on any OS:
-```bash
-python main.py
-```
-
-This loads `config.yaml`, diagnoses and cleans the data (week 3's `data_diagnostics.py`/`preprocessing.py`), preprocesses and trains the model, and prints:
-- **train accuracy and test accuracy, side by side.** Comparing the two is how you catch overfitting: if the model looks much better on the data it was trained on than on data it's never seen, it has memorised rather than learned something that generalises.
-- a classification report on the test set
-- a false-positive-rate-by-race comparison between our model and
-  COMPAS's own score
-
-All of this is also saved to a timestamped file in `results/` (e.g.`results/run_20260916_143012.txt`), so it doesn't just scroll past in your terminal -- open it later, or change something in `config.yaml` (like the model type) and compare the new file to the last one.
-`results/` is created automatically the first time you run the pipeline, and isn't tracked in git (see `.gitignore`) since it's generated output, not source.
-
-You're free to improve on this structure or restructure it entirely -- what matters is that your project stays runnable end-to-end with a single command, and that each piece (data, preprocessing, model, evaluation) stays easy to find and change independently.
-
-## Push to GitHub via Terminal
-
-Standard workflow, from the project's root folder, with the venv active:
-```bash
-git add .
-git commit -m "short description of what changed"
-git push
-```
-
-**If `git push` asks for a password and rejects your normal GitHub password:** GitHub no longer accepts account passwords for git over HTTPS -- you need a **Personal Access Token (PAT)** instead.
-1. On GitHub: **Settings -> Developer settings -> Personal access tokens -> Tokens (classic)** -> **Generate new token**, with at least `repo` scope.
-2. When `git push` prompts for a password, paste the token instead (username stays your GitHub username).
-3. So you're not asked every time: `git config --global credential.helper manager` (Windows, usually already set up by Git for Windows) or `git config --global credential.helper store` (caches it in plaintext -- fine on a personal machine, not a shared one).
-
-Alternative: set up an SSH key once (`ssh-keygen -t ed25519`, then add the public key under **GitHub -> Settings -> SSH and GPG keys**) and use the repo's SSH remote URL (`git@github.com:...`) instead of HTTPS -- no token to manage or renew.
 
 ## Dataset
 

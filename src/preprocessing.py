@@ -11,7 +11,7 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import (
     OneHotEncoder, OrdinalEncoder, TargetEncoder, StandardScaler, MinMaxScaler, RobustScaler,
 )
@@ -64,6 +64,11 @@ def clean_dataset(df: pd.DataFrame, diagnostics_config: dict) -> pd.DataFrame:
     flag_invalid_values(out, diagnostics_config.get("validity_rules", {}))
     out = _canonicalize_categories(out, diagnostics_config.get("canonical_categories", {}), placeholder_tokens)
 
+    # Placeholders ("?", "-", ...) mean "unknown" in ANY text column, not only the ones with a
+    # spelling map above (Adult's workclass / occupation / native_country have no map).
+    for col in out.select_dtypes(exclude="number").columns:
+        out.loc[out[col].astype(str).str.strip().isin(placeholder_tokens), col] = np.nan
+
     columns_to_drop = [c for c in diagnostics_config.get("redundant_columns", []) if c in out.columns]
     return out.drop(columns=columns_to_drop)
 
@@ -93,55 +98,45 @@ def _flag(condition: pd.Series, *sources: pd.Series) -> pd.Series:
     return condition.astype(float).mask(missing)
 
 
-def add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
+def add_adult_features(df: pd.DataFrame) -> pd.DataFrame:
     '''
-    Creates new features from existing ones. Row-wise only (nothing learned from the data),
-    so it is leak-safe and runs unchanged on data to predict. Missing inputs give NaN outputs.
+    Adult income: row-wise, leak-safe features. Capital gain/loss are mostly 0 with a long tail
+    (99999 is the census top code, kept as a real value): a log scale and has-any flags.
     '''
     out = df.copy()
-    age, priors = out["age"], out["priors_count"]
-    juv_cols = [c for c in ["juv_fel_count", "juv_misd_count", "juv_other_count"] if c in out.columns]
-
-    # Criminal-history intensity: how fast offences accumulated over the adult years.
-    out["priors_per_adult_year"] = priors / (age - 17).clip(lower=1)
-    # Skewed count (long right tail): log scale helps linear models, harmless for trees.
-    out["log_priors"] = np.log1p(priors)
-    out["has_priors"] = _flag(priors > 0, priors)
-
-    if juv_cols:
-        # min_count=1: the total is NaN only if every juvenile count is missing.
-        juv_total = out[juv_cols].sum(axis=1, min_count=1)
-        out["juv_total"] = juv_total
-        out["has_juv_record"] = _flag(juv_total > 0, juv_total)
-        # Total known record, adult + juvenile.
-        out["total_offenses"] = priors + juv_total
-
-    # Early onset: a prior record before age 25 is a strong recidivism signal.
-    out["young_with_priors"] = _flag((age < 25) & (priors > 0), age, priors)
-
-    if "c_charge_degree" in out.columns:
-        charge = out["c_charge_degree"]
-        is_felony = _flag(charge == "F", charge)
-        # Current felony on top of a prior record.
-        out["felony_x_priors"] = is_felony * priors
-
+    gain, loss = out["capital_gain"], out["capital_loss"]
+    out["log_capital_gain"] = np.log1p(gain)
+    out["log_capital_loss"] = np.log1p(loss)
+    out["has_capital_gain"] = _flag(gain > 0, gain)
+    out["has_capital_loss"] = _flag(loss > 0, loss)
+    out["capital_net"] = gain - loss
     return out
 
 
-def split_features_target(df: pd.DataFrame, data_config: dict, mnar_indicator_sources: list):
+# Selected by preprocessing.feature_engineering in the config.
+_FEATURE_ENGINEERING = {
+    "adult": add_adult_features,
+    "none": lambda df: df,
+}
+
+
+def split_features_target(df: pd.DataFrame, data_config: dict, mnar_indicator_sources: list,
+                          feature_engineering: str = "none"):
     """
-    Returns (X, y, extras). `extras` holds the columns kept out of the features for auditing
-    (the sensitive attribute and COMPAS's own score). On label-free data `y` is None.
+    Returns (X, y, extras). `extras` holds the sensitive attribute, kept out of the features
+    for the fairness report. On label-free data `y` is None.
     """
     target = data_config["target"]
     sensitive_attr = data_config["sensitive_attr"]
     drop_columns = data_config.get("drop_columns", [])
 
+    if feature_engineering not in _FEATURE_ENGINEERING:
+        raise ValueError(f"Unknown feature_engineering: {feature_engineering}. Options: {list(_FEATURE_ENGINEERING)}")
     df = add_missingness_indicators(df, mnar_indicator_sources)
-    df = add_engineered_features(df)
+    df = _FEATURE_ENGINEERING[feature_engineering](df)
     y = df[target] if target in df.columns else None
 
-    extras_cols = [c for c in [sensitive_attr, "score_text"] if c in df.columns]
+    extras_cols = [c for c in [sensitive_attr] if c in df.columns]
     extras = df[extras_cols].copy() if extras_cols else None
 
     always_drop = set(drop_columns) | {target, sensitive_attr}
@@ -155,7 +150,8 @@ _ENCODERS = {
     "onehot": lambda seed: OneHotEncoder(handle_unknown="ignore", sparse_output=False),
     "ordinal": lambda seed: OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
     "count": lambda seed: CountEncoder(handle_unknown=0, handle_missing=0),
-    "target": lambda seed: TargetEncoder(target_type="binary", cv=StratifiedKFold(5, shuffle=True, random_state=seed)),
+    # cv must be an int in current sklearn; for a binary target it is split with StratifiedKFold.
+    "target": lambda seed: TargetEncoder(target_type="binary", cv=5, shuffle=True, random_state=seed),
 }
 
 
@@ -175,7 +171,10 @@ def build_preprocessor(preprocessing_config: dict) -> ColumnTransformer:
         ("scale", scaler),
     ])
     categorical_pipeline = Pipeline([
-        ("impute", SimpleImputer(strategy=imputation.get("categorical_strategy", "most_frequent"))),
+        # pandas output keeps the column names, so encoders that name their output columns
+        # after the input (CountEncoder) don't report them as 0, 1, 2, ...
+        ("impute", SimpleImputer(strategy=imputation.get("categorical_strategy", "most_frequent"))
+                   .set_output(transform="pandas")),
         ("encode", encoder),
     ])
     indicator_cols = [f"{c}_was_missing" for c in preprocessing_config.get("mnar_indicator_sources", [])]

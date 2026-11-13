@@ -1,5 +1,5 @@
 """
-Entry point: `python main.py`.
+Entry point: `python main.py [config file]` (default `config.yaml`).
 
 load config -> load and clean data -> drop duplicate rows (training only) -> features/target
 -> lock the test set -> cross-validate the pipeline (preprocessing, feature selection if enabled,
@@ -8,6 +8,7 @@ model) on the development set (several metrics, and the no-model floor on the sa
 -> out-of-fold reports -> refit on all development rows -> scoreboard + full report
 """
 import shutil
+import sys
 import tempfile
 from datetime import datetime
 
@@ -21,6 +22,7 @@ from src.model import build_pipeline
 from src.evaluate import cross_validate_pipeline, cv_report, oof_classification_report, fairness_report
 from src.tuning import tune_pipeline, nested_cross_validate, tuning_report
 from src.results import save_run, save_scores
+from src.predict import predict_new
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -29,7 +31,8 @@ def load_config(path: str = "config.yaml") -> dict:
 
 
 def main():
-    config = load_config()
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
+    config = load_config(config_path)
     run = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_type = config["model"]["type"]
 
@@ -38,7 +41,8 @@ def main():
     df_clean = drop_duplicate_rows(df_clean, config["diagnostics"].get("id_column"))
 
     mnar_sources = config["preprocessing"].get("mnar_indicator_sources", [])
-    X, y, extras = split_features_target(df_clean, config["data"], mnar_sources)
+    X, y, extras = split_features_target(df_clean, config["data"], mnar_sources,
+                                         config["preprocessing"].get("feature_engineering", "none"))
 
     # From here on, every decision uses the development set only; the test set stays locked.
     X_dev, X_test, y_dev, y_test, extras_dev, extras_test = split_dev_test(
@@ -69,10 +73,10 @@ def main():
                                                      n_jobs=n_jobs)
     floor, untuned = floor_scores["validation"].mean(), fold_scores["validation"].mean()
 
-    print("\nDefault hyperparameters (config.yaml)")
+    print(f"\nDefault hyperparameters ({config_path})")
     print(f"  {selection_metric}: {untuned:.3f} ± {fold_scores['validation'].std(ddof=1):.3f}   "
           f"train-validation gap: {fold_scores['gap'].mean():+.3f}   no-model floor: {floor:.3f}")
-    report = (f"Hyperparameters from config.yaml: {config['model'].get('params')}\n\n"
+    report = (f"Hyperparameters from {config_path}: {config['model'].get('params')}\n\n"
               + cv_report(fold_scores, selection_metric)
               + f"\n\nNo-model floor (dummy, same folds): {selection_metric} = {floor:.3f}")
     final_scores = fold_scores
@@ -82,7 +86,7 @@ def main():
     if tuning_enabled:
         search_spaces = tuning_config.get("search_spaces") or {}
         if model_type not in search_spaces:
-            raise ValueError(f"tuning is enabled but config.yaml has no tuning.search_spaces for "
+            raise ValueError(f"tuning is enabled but {config_path} has no tuning.search_spaces for "
                              f"'{model_type}'. Add one, or set tuning.enabled: false.")
         search_space = dict(search_spaces[model_type])
         if selection_enabled:
@@ -128,6 +132,12 @@ def main():
         kept = pipeline.named_steps["select"].get_feature_names_out(all_features)
         refit += f"\nFeatures kept: {len(kept)} of {len(all_features)}: {', '.join(kept)}"
     report += "\n" + refit + "\n"
+
+    # Unlabeled rows to predict (e.g. adult_new.csv): same cleaning, refit pipeline, every row kept.
+    if config["data"].get("predict_path"):
+        predictions_path = predict_new(pipeline, config)
+        print(f"Predictions for {config['data']['predict_path']}: {predictions_path}")
+        report += f"\nPredictions saved: {predictions_path}\n"
 
     # Scoreboard: one row per run, so runs on the same data and folds can be compared fold by fold.
     row = {"run": run, "data": config["data"]["path"], "model": model_type, "tuned": tuning_enabled,
