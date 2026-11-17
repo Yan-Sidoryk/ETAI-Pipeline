@@ -7,13 +7,15 @@ from src.data import load_data
 from src.preprocessing import clean_dataset, split_features_target
 
 
-def predict_new(pipeline, config: dict, threshold: float = 0.5) -> str:
+def predict_new(pipeline, config: dict, input_path: str = None, output_path: str = None,
+                threshold: float = 0.5) -> str:
     """
-    Loads `data.predict_path`, applies the same cleaning and feature split as training (but no
-    de-duplication: every row needs a prediction), and saves id, probability and 0/1
-    prediction to `output.predictions`. Returns the path. Rows out = rows in.
+    Loads `input_path` (default `data.predict_path`), applies the same cleaning and feature split
+    as training (but no de-duplication: every row needs a prediction), and saves id, probability
+    and 0/1 prediction to `output_path` (default `output.predictions`). Returns the path.
+    Rows out = rows in.
     """
-    raw = load_data(config["data"]["predict_path"])
+    raw = load_data(input_path or config["data"]["predict_path"])
     clean = clean_dataset(raw, config["diagnostics"])
     prep = config["preprocessing"]
     X, _, _ = split_features_target(clean, config["data"], prep.get("mnar_indicator_sources", []),
@@ -28,7 +30,7 @@ def predict_new(pipeline, config: dict, threshold: float = 0.5) -> str:
     if len(out) != len(raw):
         raise RuntimeError(f"{len(raw)} rows in, {len(out)} predictions out")
 
-    path = config["output"]["predictions"]
+    path = output_path or config["output"]["predictions"]
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     out.to_csv(path, index=False)
     return path

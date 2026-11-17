@@ -1,5 +1,12 @@
 # Predictive Pipeline -- ETAI -- 20222004
 
+## Latest changes
+
+- **Choosable numeric imputer:** `preprocessing.imputation.numeric_strategy` picks `median` / `mean` / `knn` / `iterative` (MICE) / `random_forest` (missForest). 
+- **Deployment:** `main.py` saves the fitted pipeline to `models/model.joblib`, and the new `python predict.py [input.csv] [output.csv]` predicts new data with it, without retraining.
+
+---
+
 **Task:** predict whether a person earns more than 50,000 USD a year (`income_over_50k`, 1 = yes, about 24% of people) from 1994 US Census data (UCI *Adult*, subsampled and extended for the course). `data/adult_train.csv` has 6,000 labelled people; `data/adult_new.csv` has 2,000 new people the final model predicts. Column descriptions: `data/README.md`.
 
 The pipeline was built on ProPublica's COMPAS recidivism data (weeks 2-8) and moved to Adult income in week 9; COMPAS has since been removed. Its history is in git (up to the "week 8 submission" commit).
